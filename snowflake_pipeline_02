@@ -1,0 +1,176 @@
+-- Use Database
+USE DATABASE YELP_DATABASE_SF;
+
+---------- Creating a Sentimental Anlaysis UDF ( Updated ) -----------------
+
+CREATE OR REPLACE FUNCTION analyze_sentiment_new (text STRING, stars INT)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.9'
+PACKAGES = ('textblob')
+HANDLER = 'sentiment_analyzer'
+AS
+$$
+from textblob import TextBlob
+
+NEGATIVE_KEYWORDS = [
+    "food poisoning", "worst", "awful", "terrible", "horrible", 
+    "disgusting", "avoid", "never again", "bad service", "not worth", 
+    "poor", "rude", "unprofessional"
+]
+
+POSITIVE_KEYWORDS = [
+    "amazing", "excellent", "fantastic", "outstanding", "perfect", 
+    "love", "great service", "highly recommend", "best"
+]
+
+def sentiment_analyzer(text, stars):
+    if not text:
+        return 'Neutral'
+    
+    # Star-rating rule
+    if stars is not None:
+        if stars <= 2:
+            return "Negative"
+        elif stars >= 4:
+            return "Positive"
+    
+    # Text-based rules
+    t = text.lower()
+    for word in NEGATIVE_KEYWORDS:
+        if word in t:
+            return "Negative"
+    for word in POSITIVE_KEYWORDS:
+        if word in t:
+            return "Positive"
+
+    # Fallback to TextBlob polarity
+    analysis = TextBlob(text)
+    if analysis.sentiment.polarity > 0.1:
+        return 'Positive'
+    elif analysis.sentiment.polarity < -0.1:
+        return 'Negative'
+    else:
+        return 'Neutral'
+$$;
+
+
+
+---------------------------------------------------
+
+
+use database yelp_database_sf;
+
+
+select * from YELP_REVIEWS limit 10;
+select * from YELP_BUSINESS;
+
+-------------- Create a review table with sentimental analysis --------------
+
+create or replace table tbl_yelp_reviews as
+select 
+    review_text:business_id::string   as business_id, 
+    review_text:date::date            as review_date,
+    review_text:review_id::string       as review_id,
+    review_text:stars::float          as review_stars,   -- changed to float
+    review_text:text::string          as review_text,
+    analyze_sentiment_new(review_text, review_text:stars::float) as sentiments
+from yelp_reviews;
+ 
+
+select * from tbl_yelp_reviews limit 10;
+
+-------------- Create a business table --------------
+select * from YELP_BUSINESS limit 10;
+
+create or replace table tbl_yelp_business as
+select 
+    business_text:business_id::string      as business_id, 
+    business_text:city::string             as city,
+    business_text:state::string            as state,
+    business_text:review_count::number     as review_count,   -- changed to number
+    business_text:stars::float             as stars,          -- changed to float
+    business_text:categories::string       as categories
+from yelp_business;
+
+select * from tbl_yelp_business limit 100;
+
+select 
+    avg(stars) as avg_stars,
+    max(review_count) as max_reviews
+from tbl_yelp_business;
+
+
+
+--------------- Lets create Streams + Triggered Tasks ----------------
+
+
+------- 1. Create Streams on Raw Snowpipe Tables ------
+-- Stream for reviews
+create or replace stream str_yelp_reviews 
+on table yelp_reviews;
+
+-- Stream for business
+create or replace stream str_yelp_business 
+on table yelp_business;
+
+
+-------- 2. Create Triggered Tasks for Transformation -------
+/* 
+These tasks only run when the stream has data, saving warehouse credits.
+We’ll use a small warehouse (compute_wh here – replace with yours).
+*/
+
+
+--------- Reviews Transformation Task ------------
+create or replace task task_transform_reviews
+warehouse = compute_wh
+when system$stream_has_data('str_yelp_reviews')
+as
+merge into tbl_yelp_reviews t
+using (
+    select 
+        review_text:business_id::string   as business_id, 
+        review_text:date::date            as review_date,
+        review_text:review_id::string       as review_id,
+        review_text:stars::float          as review_stars,
+        review_text:text::string          as review_text,
+        analyze_sentiment_new(review_text, review_text:stars::float) as sentiments
+    from str_yelp_reviews
+) s
+on t.business_id = s.business_id 
+   and t.review_date = s.review_date
+   and t.review_text = s.review_text
+when not matched then
+  insert (business_id, review_date, review_stars, review_text, sentiments)
+  values (s.business_id, s.review_date, s.review_stars, s.review_text, s.sentiments);
+
+
+------------ Business Transformation Task ------------
+
+create or replace task task_transform_business
+warehouse = compute_wh
+when system$stream_has_data('str_yelp_business')
+as
+merge into tbl_yelp_business t
+using (
+    select 
+        business_text:business_id::string  as business_id, 
+        business_text:city::string         as city,
+        business_text:state::string        as state,
+        business_text:review_count::number as review_count,
+        business_text:stars::float         as stars,
+        business_text:categories::string   as categories
+    from str_yelp_business
+) s
+on t.business_id = s.business_id
+when not matched then
+  insert (business_id, city, state, review_count, stars, categories)
+  values (s.business_id, s.city, s.state, s.review_count, s.stars, s.categories);
+
+------------------- 3. Activate the Tasks -------------------
+
+----- By default, tasks are created in a suspended state. Enable them with: 
+
+alter task task_transform_reviews resume;
+alter task task_transform_business resume;
