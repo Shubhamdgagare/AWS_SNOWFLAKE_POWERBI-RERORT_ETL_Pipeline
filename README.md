@@ -88,19 +88,33 @@ Snowflake is connected through the Snowflake ODBC driver.
 
 📦 yelp-data-pipeline
 │
+
 ├── assets/
+
 │   └── lifecycle.png        # Architecture diagram
+
 │
+
 ├── scripts/
+
 │   ├── 01_storage_integration.sql
+
 │   ├── 02_snowpipe_setup.sql
+
 │   ├── 03_raw_tables.sql
+
 │   ├── 04_transformation_tasks.sql
+
 │   └── 05_sentiment_udf.sql
+
 │
+
 ├── powerbi/
+
 │   └── report.rdl          # Example Power BI Report Builder file
+
 │
+
 └── README.md
 
 ⚙️ How the Pipeline Works (Step-by-Step)
