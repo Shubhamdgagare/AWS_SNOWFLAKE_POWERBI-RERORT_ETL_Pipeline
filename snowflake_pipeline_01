@@ -1,0 +1,198 @@
+/*
+1. Create a S3 bucket in aws
+2. Create a IAM role in aws which will hava "AmazonS3ReadOnlyAccess" policy attached to it. copy the ARN number or that role
+4. Put that in below "STORAGE_AWS_ROLE_ARN"
+3. Create a main bucket and copy the URI from the S3 bucket and put it in "STORAGE_ALLOWED_LOCATIONS"
+3. Run Below data ingestion SQL queries in Snowflake >
+*/
+
+-- Create Storage Integration
+create or replace storage integration S3_integration
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::897175693147:role/snowflake_reader_role'
+STORAGE_ALLOWED_LOCATIONS = ('s3://yelp-database-practice/');
+
+desc integration s3_integration;
+
+/*
+1. After running the "desc integration s3_integration;" query you will get the results below
+2. from this results copy the results / property_value in from of a) STORAGE_AWS_IAM_USER_ARN & STORAGE_AWS_EXTERNAL_ID
+and go to our AWS user and go to "Trust relationship" > click "Edit trust Policy" > Replace the existing policy with
+
+Syntax : 
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "[STORAGE_AWS_IAM_USER_ARN]"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {
+                "StringEquals": {
+                    "sts:ExternalId": "[STORAGE_AWS_EXTERNAL_ID]"
+                }
+            }
+        }
+    ]
+}
+
+---------------------------------
+Eg > 
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::867386273434:user/rrt51120-a"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {
+                "StringEquals": {
+                    "sts:ExternalId": "ZH26273_SFCRole=3_sW/q+GPrLaNJxNvcJ8Kfdsd/1N="
+                }
+            }
+        }
+    ]
+}
+
+
+*/
+
+/*
+
+Create a table with names
+
+create or replace table table_name (Data_type_name variant)
+
+*/
+
+-- Create database
+Create database YELP_DATABASE_SF;
+
+-- Use Database
+USE DATABASE YELP_DATABASE_SF;
+
+------------------------------------------
+/* 
+
+Lets setup a automation of yelp_reviews table 1
+
+*/
+
+-- Create table for Review Folder
+create or replace table yelp_reviews (review_text variant);
+
+-- Create Stage
+CREATE OR REPLACE STAGE s3_stage_reviews
+URL = 's3://yelp-database-practice/reviews/'
+STORAGE_INTEGRATION = s3_integration
+FILE_FORMAT = (TYPE = JSON);
+
+
+-- Create Snowpipe
+create or replace pipe load_YELP_REVIEWS
+auto_ingest = true
+AS
+COPY INTO YELP_REVIEWS
+FROM @s3_stage_reviews
+FILE_FORMAT = (TYPE = JSON)
+ON_ERROR = 'CONTINUE';
+
+---Setup Automated Loading
+desc pipe load_YELP_REVIEWS;
+
+/*
+- From above query "desc pipe load_YELP_REVIEWS;" a result must be generated 
+so from result table go to "notification_channel" column and copy the ARN number from the cell its a SQS trigger ID so when new data is uploaded in reviews folder in S3 it will send a notification alert to snowflake and it will trigger the snowpipe
+
+go to S3 bucket and then go to "Properties" scroll down to "Event notifications" > click on "create event notification" and add
+
+Event name [ put any unique name eg > "snowpipe_review_trigger"]
+Prefix - optional [ name of the folder if availabe or not required eg > "reviews"]
+Suffix - optional [ if you want to select only specific data type eg > ".json"]
+& save the event
+
+*/
+
+---------- Upload data into reviews folder in s3 and wait for sometime to process this data
+
+select * from YELP_REVIEWS limit 100;
+
+------------------------------------------
+/* 
+
+Lets setup a automation of yelp_business table 2
+
+*/
+
+-- Create table for Review Folder
+create or replace table yelp_business (business_text variant);
+
+-- Create Stage
+CREATE OR REPLACE STAGE s3_stage_business
+URL = 's3://yelp-database-practice/business/'
+STORAGE_INTEGRATION = s3_integration
+FILE_FORMAT = (TYPE = JSON);
+
+
+-- Create Snowpipe
+create or replace pipe load_YELP_BUSINESS
+auto_ingest = true
+AS
+COPY INTO YELP_BUSINESS
+FROM @s3_stage_business
+FILE_FORMAT = (TYPE = JSON)
+ON_ERROR = 'CONTINUE';
+
+---Setup Automated Loading
+desc pipe load_YELP_BUSINESS;
+
+/*
+- From above query "desc pipe load_YELP_BUSINESS;" a result must be generated 
+so from result table go to "notification_channel" column and copy the ARN number from the cell its a SQS trigger ID so when new data is uploaded in "business" folder in S3 it will send a notification alert to snowflake and it will trigger the snowpipe
+
+go to S3 bucket and then go to "Properties" scroll down to "Event notifications" > click on "create event notification" and add
+
+Event name [ put any unique name eg > "snowpipe_business_trigger"]
+Prefix - optional [ name of the folder if availabe or not required eg > "business"]
+Suffix - optional [ if you want to select only specific data type eg > ".json"]
+& save the event
+
+*/
+
+---------- Upload data into reviews folder in s3 and wait for sometime to process this data
+
+select * from YELP_BUSINESS;
+
+select * from YELP_DATABASE_SF.PUBLIC.TBL_YELP_REVIEWS limit 10;
+
+
+------------ Creating UDF Sentimental Analysis Function --------------
+
+CREATE OR REPLACE FUNCTION analyze_sentiment(text STRING)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.9'
+PACKAGES = ('textblob') 
+HANDLER = 'sentiment_analyzer'
+AS $$
+from textblob import TextBlob
+def sentiment_analyzer(text):
+    analysis = TextBlob(text)
+    if analysis.sentiment.polarity > 0:
+        return 'Positive'
+    elif analysis.sentiment.polarity == 0:
+        return 'Neutral'
+    else:
+        return 'Negative'
+$$;
+
+
+
