@@ -23,7 +23,7 @@ This project represents a modern ELT architecture using fully cloud-native, even
 
 > **Replace the link below once you upload your lifecycle image**
 
-![Architecture Diagram](./assets/lifecycle.png)
+![Architecture Diagram](./assets/project_architecture.jpg)
 
 ---
 
